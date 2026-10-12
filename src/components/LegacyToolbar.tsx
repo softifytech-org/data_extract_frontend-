@@ -13,6 +13,8 @@ interface Props {
   saving: boolean;
   approving: boolean;
   approved: boolean;
+  hasDocument: boolean;
+  submitting: boolean;
   onSelectImage: () => void;
   onSave: () => void;
   onCancelEdit: () => void;
@@ -22,6 +24,7 @@ interface Props {
   onNext: () => void;
   onJumpToRecord: (recordIndex: number) => void;
   onApprove: () => void;
+  onSubmit: () => void;
 }
 
 export default function LegacyToolbar({
@@ -33,6 +36,8 @@ export default function LegacyToolbar({
   saving,
   approving,
   approved,
+  hasDocument,
+  submitting,
   onSelectImage,
   onSave,
   onCancelEdit,
@@ -42,6 +47,7 @@ export default function LegacyToolbar({
   onNext,
   onJumpToRecord,
   onApprove,
+  onSubmit,
 }: Props) {
   return (
     <div className="legacy-toolbar">
@@ -60,6 +66,14 @@ export default function LegacyToolbar({
         </button>
         <button className="legacy-btn" onClick={onCancelEdit} disabled={!hasUnsavedChanges}>
           Cancel Edit
+        </button>
+        <button
+          className="legacy-btn legacy-btn-primary"
+          onClick={onSubmit}
+          disabled={!hasDocument || submitting}
+          title="Writes every record in this document out as XML, in the same field layout as the legacy data dump, to local storage and the database"
+        >
+          {submitting ? "Submitting…" : "Submit"}
         </button>
         <button className="legacy-btn legacy-btn-danger" onClick={onExit}>
           Exit

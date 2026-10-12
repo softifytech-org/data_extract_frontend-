@@ -10,6 +10,8 @@ import {
   excelExportUrl,
   getDocument,
   processDocument,
+  submissionXmlDownloadUrl,
+  submitDocument,
   updateFields,
   uploadDocument,
   xmlExportUrl,
@@ -44,6 +46,8 @@ export default function MainPage() {
   const [approving, setApproving] = useState(false);
   const [showData, setShowData] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentEntry = useMemo(
@@ -178,6 +182,26 @@ export default function MainPage() {
     }
   }
 
+  async function handleSubmit() {
+    if (!documentId) return;
+    setSubmitting(true);
+    setSubmitMessage(null);
+    setError(null);
+    try {
+      if (hasUnsavedChanges) {
+        await persistDraft(selectedRecordIndex, dirtyFields);
+      }
+      const result = await submitDocument(documentId);
+      setSubmitMessage(
+        `Submitted ${result.records_submitted} record(s) to XML (local file + database).`
+      );
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : "Submit failed. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   function handleReset() {
     setDocumentId(null);
     setRecord(null);
@@ -186,6 +210,7 @@ export default function MainPage() {
     setSelectedField(null);
     setShowData(false);
     setError(null);
+    setSubmitMessage(null);
   }
 
   const tier = confidenceTier(record?.overall_confidence ?? null);
@@ -249,6 +274,15 @@ export default function MainPage() {
 
       {error && <div className="error-banner">{error}</div>}
 
+      {submitMessage && documentId && (
+        <div className="approved-banner">
+          <span>{submitMessage}</span>
+          <span>
+            <a href={submissionXmlDownloadUrl(documentId)}>Download submitted XML</a>
+          </span>
+        </div>
+      )}
+
       {currentEntry && currentEntry.cross_field_warnings.length > 0 && (
         <div className="warnings-banner">
           <strong>Possible inconsistencies detected in this record:</strong>
@@ -275,6 +309,8 @@ export default function MainPage() {
         saving={saving}
         approving={approving}
         approved={!!currentEntry?.approved}
+        hasDocument={!!documentId && !!record}
+        submitting={submitting}
         onSelectImage={() => fileInputRef.current?.click()}
         onSave={handleSave}
         onCancelEdit={handleCancelEdit}
@@ -284,6 +320,7 @@ export default function MainPage() {
         onNext={() => goToRecord(selectedRecordIndex + 1)}
         onJumpToRecord={goToRecord}
         onApprove={handleApprove}
+        onSubmit={handleSubmit}
       />
 
       <div className="review-grid three-col">

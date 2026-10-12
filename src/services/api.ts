@@ -1,6 +1,11 @@
 import type { DocumentRecord, DocumentSummary } from "../types/document";
 
-const BASE = "/api/documents";
+// In local dev this stays "" and vite.config.ts's dev-only proxy forwards
+// /api to the backend. A static Vercel build has no such proxy, so
+// production sets VITE_API_BASE_URL to the deployed backend's origin
+// (e.g. https://<name>.onrender.com) and every call below is absolute.
+const API_ROOT = import.meta.env.VITE_API_BASE_URL ?? "";
+const BASE = `${API_ROOT}/api/documents`;
 
 export class ApiRequestError extends Error {
   status: number;
@@ -104,4 +109,23 @@ export function excelExportUrl(documentId: string): string {
 
 export function xmlExportUrl(documentId: string): string {
   return `${BASE}/${documentId}/export/xml`;
+}
+
+export interface SubmitResponse {
+  document_id: string;
+  xml_path: string;
+  records_submitted: number;
+}
+
+export async function submitDocument(documentId: string, submittedBy?: string): Promise<SubmitResponse> {
+  const res = await fetch(`${BASE}/${documentId}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved_by: submittedBy ?? null }),
+  });
+  return handle(res);
+}
+
+export function submissionXmlDownloadUrl(documentId: string): string {
+  return `${BASE}/${documentId}/submit/download`;
 }
