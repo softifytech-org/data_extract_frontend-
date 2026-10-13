@@ -6,6 +6,7 @@ import type { DocumentRecord, DocumentSummary } from "../types/document";
 // (e.g. https://<name>.onrender.com) and every call below is absolute.
 const API_ROOT = import.meta.env.VITE_API_BASE_URL ?? "";
 const BASE = `${API_ROOT}/api/documents`;
+const BATCH_BASE = `${API_ROOT}/api/batches`;
 
 export class ApiRequestError extends Error {
   status: number;
@@ -29,9 +30,15 @@ async function handle<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function uploadDocument(file: File): Promise<{ document_id: string; status: string }> {
+export type DocumentLayout = "old" | "new";
+
+export async function uploadDocument(
+  file: File,
+  layout: DocumentLayout = "old"
+): Promise<{ document_id: string; status: string }> {
   const form = new FormData();
   form.append("file", file);
+  form.append("layout", layout);
   const res = await fetch(`${BASE}/upload`, { method: "POST", body: form });
   return handle(res);
 }
@@ -128,4 +135,136 @@ export async function submitDocument(documentId: string, submittedBy?: string): 
 
 export function submissionXmlDownloadUrl(documentId: string): string {
   return `${BASE}/${documentId}/submit/download`;
+}
+
+// --- Batch upload (multi-image, queue-backed) ---
+//
+// No authentication anywhere, by explicit decision: this app has no
+// accounts, no shared key, no gate of any kind. Every batch endpoint
+// here is reachable by anyone who can reach the URL - see the final
+// report for what that means and what it risks.
+
+export interface BatchImageStatus {
+  position: number;
+  document_id: string;
+  original_filename: string;
+  status: string;
+  error: string | null;
+}
+
+export interface BatchSummary {
+  id: string;
+  status: string;
+  image_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BatchDetail extends BatchSummary {
+  images: BatchImageStatus[];
+}
+
+export interface BatchUploadResponse {
+  batch_id: string;
+  image_count: number;
+  status: string;
+}
+
+export interface BatchSubmitResponse {
+  batch_id: string;
+  records_submitted: number;
+  status: string;
+}
+
+export interface BatchSubmissionStatus {
+  batch_id: string;
+  submitted: boolean;
+  record_count: number | null;
+  submitted_at: string | null;
+}
+
+export async function uploadBatch(files: File[], layout: DocumentLayout = "old"): Promise<BatchUploadResponse> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  form.append("layout", layout);
+  const res = await fetch(BATCH_BASE, { method: "POST", body: form });
+  return handle(res);
+}
+
+export async function listBatches(): Promise<BatchSummary[]> {
+  const res = await fetch(BATCH_BASE);
+  return handle(res);
+}
+
+export async function getBatch(batchId: string): Promise<BatchDetail> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}`);
+  return handle(res);
+}
+
+export class BatchNotReadyError extends Error {
+  blockers: string[];
+  constructor(blockers: string[]) {
+    super("Batch is not ready to submit");
+    this.blockers = blockers;
+  }
+}
+
+export async function submitBatch(batchId: string): Promise<BatchSubmitResponse> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/submit`, { method: "POST" });
+  if (!res.ok) {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      // no JSON body
+    }
+    if (res.status === 400 && Array.isArray(body?.detail?.blockers)) {
+      throw new BatchNotReadyError(body.detail.blockers);
+    }
+    throw new ApiRequestError(
+      res.status, typeof body?.detail === "string" ? body.detail : `Request failed (${res.status})`
+    );
+  }
+  return res.json();
+}
+
+export async function getBatchSubmissionStatus(batchId: string): Promise<BatchSubmissionStatus> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/submission`);
+  return handle(res);
+}
+
+export function downloadBatchSubmissionXml(batchId: string): Promise<void> {
+  return downloadFile(`${BATCH_BASE}/${batchId}/submission/download`, `${batchId}_submission.xml`);
+}
+
+/** Fetches and saves a file via a throwaway object URL, so the download
+ * gets a sensible filename regardless of what the browser would have
+ * guessed from the URL alone. */
+async function downloadFile(url: string, filename: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let message = `Download failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) message = body.detail;
+    } catch {
+      // no JSON body - keep the generic message
+    }
+    throw new ApiRequestError(res.status, message);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
+export function downloadBatchDocumentExcel(documentId: string): Promise<void> {
+  return downloadFile(excelExportUrl(documentId), `${documentId}.xlsx`);
+}
+
+export function downloadBatchDocumentXml(documentId: string): Promise<void> {
+  return downloadFile(xmlExportUrl(documentId), `${documentId}.xml`);
 }

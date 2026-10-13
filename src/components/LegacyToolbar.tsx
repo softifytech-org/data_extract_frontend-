@@ -52,30 +52,44 @@ export default function LegacyToolbar({
   return (
     <div className="legacy-toolbar">
       <div className="legacy-toolbar-buttons">
-        <button className="legacy-btn" onClick={onSelectImage}>
+        <button className="legacy-btn" onClick={onSelectImage} title="Choose a new image or PDF to upload">
           Select Image
         </button>
-        <button className="legacy-btn" onClick={onExit}>
-          New
+        <button className="legacy-btn" onClick={onExit} title="Clear this screen and start a fresh upload">
+          New Document
         </button>
-        <button className="legacy-btn" onClick={onSave} disabled={!hasUnsavedChanges || saving}>
-          {saving ? "Saving…" : "Save"}
+        <button
+          className="legacy-btn"
+          onClick={onSave}
+          disabled={!hasUnsavedChanges || saving}
+          title="Save your edits to this record now (edits also save automatically when you switch records or approve)"
+        >
+          {saving ? "Saving…" : "Save Changes"}
         </button>
-        <button className="legacy-btn" onClick={onShowData}>
-          Show Data
+        <button className="legacy-btn" onClick={onShowData} title="Show this record's raw data (for troubleshooting)">
+          Show Raw Data
         </button>
-        <button className="legacy-btn" onClick={onCancelEdit} disabled={!hasUnsavedChanges}>
-          Cancel Edit
+        <button
+          className="legacy-btn"
+          onClick={onCancelEdit}
+          disabled={!hasUnsavedChanges}
+          title="Discard your unsaved edits and restore the last saved values"
+        >
+          Discard Edits
         </button>
         <button
           className="legacy-btn legacy-btn-primary"
           onClick={onSubmit}
           disabled={!hasDocument || submitting}
-          title="Writes every record in this document out as XML, in the same field layout as the legacy data dump, to local storage and the database"
+          title="Writes every record in THIS document out to XML right now (does not require approval first, and is separate from a batch's own combined submission)"
         >
-          {submitting ? "Submitting…" : "Submit"}
+          {submitting ? "Generating XML…" : "Generate XML"}
         </button>
-        <button className="legacy-btn legacy-btn-danger" onClick={onExit}>
+        <button
+          className="legacy-btn legacy-btn-danger"
+          onClick={onExit}
+          title="Leave this document and clear the screen"
+        >
           Exit
         </button>
       </div>
@@ -105,8 +119,9 @@ export default function LegacyToolbar({
           className="legacy-btn legacy-btn-primary"
           onClick={onApprove}
           disabled={!canApprove || approving}
+          title="Save this record, mark it approved, and move to the next record in this document"
         >
-          {approved ? "✓ Approved" : approving ? "Approving…" : "Approve & Submit"}
+          {approved ? "✓ Approved" : approving ? "Approving…" : "Approve & Next Record"}
         </button>
       </div>
     </div>

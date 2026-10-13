@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import DocumentViewer from "../components/DocumentViewer";
 import LegacyForm from "../components/LegacyForm";
 import LegacyToolbar from "../components/LegacyToolbar";
@@ -7,7 +7,10 @@ import { buildBlankFields } from "../constants/blankFields";
 import {
   ApiRequestError,
   approveRecord,
+  type BatchImageStatus,
+  type DocumentLayout,
   excelExportUrl,
+  getBatch,
   getDocument,
   processDocument,
   submissionXmlDownloadUrl,
@@ -28,13 +31,33 @@ function confidenceTier(score: number | null): "high" | "medium" | "low" {
   return "low";
 }
 
+interface Props {
+  /** When set, MainPage loads this EXISTING, already-processed document
+   * on mount instead of waiting for an upload - this is how a batch
+   * image's "Review" button opens it here, reusing every bit of the
+   * single-document review/edit/approve logic below unchanged rather
+   * than duplicating it. */
+  initialDocumentId?: string;
+  /** Shown as a distinct "Back to batch" link when provided - only set
+   * when MainPage was opened FROM the batch review screen. */
+  onBack?: () => void;
+  /** The batch this document belongs to, when opened from batch review -
+   * enables Previous/Next-image-in-batch navigation and auto-advance on
+   * completion, so a reviewer working through a batch never has to
+   * bounce back to the batch screen between images. */
+  batchId?: string;
+  /** Switches the review screen to a DIFFERENT document within the same
+   * batch, without leaving this screen - see App.tsx's "review" view. */
+  onNavigateToDocument?: (documentId: string) => void;
+}
+
 /**
  * One persistent screen, matching the reference legacy app: the toolbar and
  * the full field layout are visible from the start (blank), not behind a
  * separate "upload" landing page. Selecting an image uploads + processes in
  * place and the SAME form fills in once extraction finishes.
  */
-export default function MainPage() {
+export default function MainPage({ initialDocumentId, onBack, batchId, onNavigateToDocument }: Props) {
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [record, setRecord] = useState<DocumentRecord | null>(null);
   const [selectedRecordIndex, setSelectedRecordIndex] = useState(1);
@@ -42,13 +65,74 @@ export default function MainPage() {
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [loadingExisting, setLoadingExisting] = useState(!!initialDocumentId);
   const [saving, setSaving] = useState(false);
   const [approving, setApproving] = useState(false);
   const [showData, setShowData] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
+  // "old" is pre-selected: it's the majority document format (~90% of
+  // real volume) - see the layout selector rendered below the toolbar.
+  const [layout, setLayout] = useState<DocumentLayout>("old");
+  const [batchImages, setBatchImages] = useState<BatchImageStatus[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!batchId) {
+      setBatchImages(null);
+      return;
+    }
+    let cancelled = false;
+    getBatch(batchId)
+      .then((detail) => {
+        if (!cancelled) setBatchImages(detail.images);
+      })
+      .catch(() => {
+        // Batch-navigation is a convenience, not a requirement - the
+        // single-document review below still works fully without it.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [batchId]);
+
+  const batchPosition = useMemo(() => {
+    if (!batchImages || !documentId) return -1;
+    return batchImages.findIndex((img) => img.document_id === documentId);
+  }, [batchImages, documentId]);
+
+  const adjacentBatchDocument = (step: 1 | -1): string | null => {
+    if (!batchImages || batchPosition === -1) return null;
+    const next = batchImages[batchPosition + step];
+    return next ? next.document_id : null;
+  };
+
+  useEffect(() => {
+    if (!initialDocumentId) return;
+    let cancelled = false;
+    setLoadingExisting(true);
+    setError(null);
+    getDocument(initialDocumentId)
+      .then((full) => {
+        if (cancelled) return;
+        setDocumentId(full.document_id);
+        setRecord(full);
+        setDraft(full.records[0]?.fields ?? BLANK_FIELDS);
+        setSelectedRecordIndex(full.records[0]?.record_index ?? 1);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof ApiRequestError ? err.message : "Could not load this document.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingExisting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDocumentId]);
 
   const currentEntry = useMemo(
     () => record?.records.find((r) => r.record_index === selectedRecordIndex) ?? null,
@@ -74,7 +158,7 @@ export default function MainPage() {
     setDraft(BLANK_FIELDS);
     setSelectedField(null);
     try {
-      const uploaded = await uploadDocument(file);
+      const uploaded = await uploadDocument(file, layout);
       setDocumentId(uploaded.document_id);
       setUploading(false);
       setProcessing(true);
@@ -237,7 +321,43 @@ export default function MainPage() {
 
       <div className="review-header">
         <div className="title-block">
-          <h2>{record?.source_file.original_filename ?? "No document loaded"}</h2>
+          {onBack && (
+            <div className="batch-nav-row">
+              <button className="back-link" onClick={onBack}>
+                ← Back to batch
+              </button>
+              {batchImages && batchPosition !== -1 && (
+                <span className="batch-nav-controls">
+                  <button
+                    className="secondary-button"
+                    style={{ padding: "3px 10px", fontSize: 12 }}
+                    disabled={!adjacentBatchDocument(-1)}
+                    onClick={() => {
+                      const prev = adjacentBatchDocument(-1);
+                      if (prev) onNavigateToDocument?.(prev);
+                    }}
+                  >
+                    ◀ Prev image
+                  </button>
+                  <span className="batch-nav-position">
+                    Image {batchPosition + 1} / {batchImages.length}
+                  </span>
+                  <button
+                    className="secondary-button"
+                    style={{ padding: "3px 10px", fontSize: 12 }}
+                    disabled={!adjacentBatchDocument(1)}
+                    onClick={() => {
+                      const next = adjacentBatchDocument(1);
+                      if (next) onNavigateToDocument?.(next);
+                    }}
+                  >
+                    Next image ▶
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+          <h2>{record?.source_file.original_filename ?? (loadingExisting ? "Loading…" : "No document loaded")}</h2>
           <div className="doc-meta">
             {documentId ? (
               <>
@@ -245,6 +365,8 @@ export default function MainPage() {
                 {record?.status ?? (uploading ? "uploading" : processing ? "processing" : "-")}
                 {totalReviewAcrossDoc > 0 ? ` · ${totalReviewAcrossDoc} field(s) need review across all records` : ""}
               </>
+            ) : loadingExisting ? (
+              "Loading this document's extracted records…"
             ) : (
               "Click Select Image to upload a document"
             )}
@@ -257,6 +379,40 @@ export default function MainPage() {
         )}
       </div>
 
+      {!documentId && !loadingExisting && (
+        <div className="layout-selector" role="radiogroup" aria-label="Document form type">
+          <span className="layout-selector-label">Which form does this document use?</span>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={layout === "old"}
+            className={`layout-option${layout === "old" ? " selected" : ""}`}
+            onClick={() => setLayout("old")}
+          >
+            <span className="layout-option-title">Standard Form ✓ Recommended</span>
+            <span className="layout-option-hint">Clean grid layout, fields lined up in rows/columns</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={layout === "new"}
+            className={`layout-option${layout === "new" ? " selected" : ""}`}
+            onClick={() => setLayout("new")}
+          >
+            <span className="layout-option-title">Compact Form</span>
+            <span className="layout-option-hint">Dense paragraph text, no grid lines</span>
+          </button>
+        </div>
+      )}
+      {record && (
+        <div
+          className="layout-badge"
+          title="The form type selected at upload, which determined how fields were extracted from this document"
+        >
+          Form type used: <strong>{record.layout === "new" ? "Compact Form" : "Standard Form"}</strong>
+        </div>
+      )}
+
       {record?.status === "approved" && documentId && (
         <div className="approved-banner">
           <span>
@@ -268,6 +424,18 @@ export default function MainPage() {
             <a href={excelExportUrl(documentId)}>Download Excel</a>
             {"  ·  "}
             <a href={xmlExportUrl(documentId)}>Download XML</a>
+            {adjacentBatchDocument(1) && (
+              <>
+                {"  ·  "}
+                <button
+                  className="primary-button"
+                  style={{ padding: "4px 12px", fontSize: 12.5 }}
+                  onClick={() => onNavigateToDocument?.(adjacentBatchDocument(1)!)}
+                >
+                  Next image ▶
+                </button>
+              </>
+            )}
           </span>
         </div>
       )}
@@ -279,6 +447,18 @@ export default function MainPage() {
           <span>{submitMessage}</span>
           <span>
             <a href={submissionXmlDownloadUrl(documentId)}>Download submitted XML</a>
+            {adjacentBatchDocument(1) && (
+              <>
+                {"  ·  "}
+                <button
+                  className="primary-button"
+                  style={{ padding: "4px 12px", fontSize: 12.5 }}
+                  onClick={() => onNavigateToDocument?.(adjacentBatchDocument(1)!)}
+                >
+                  Next image ▶
+                </button>
+              </>
+            )}
           </span>
         </div>
       )}
@@ -335,7 +515,11 @@ export default function MainPage() {
             <DocumentViewer documentId={documentId} fileType={record?.source_file.file_type ?? "image"} highlight={highlight} />
           ) : (
             <div className="empty-document-panel">
-              {uploading ? "Uploading…" : "No document selected yet - click Select Image above."}
+              {uploading
+                ? "Uploading…"
+                : loadingExisting
+                ? "Loading…"
+                : "No document selected yet - click Select Image above."}
             </div>
           )}
         </div>

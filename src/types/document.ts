@@ -81,6 +81,7 @@ export interface RecordEntry {
 export interface DocumentRecord {
   document_id: string;
   status: DocumentStatus;
+  layout: "old" | "new";
   source_file: SourceFileInfo;
   records: RecordEntry[];
   record_count: number;
