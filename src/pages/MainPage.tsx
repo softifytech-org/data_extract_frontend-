@@ -151,6 +151,20 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
 
   const hasUnsavedChanges = Object.keys(dirtyFields).length > 0;
 
+  // Native browser warning on an actual refresh/close/tab-close - the
+  // auto-save-on-navigate guards above only cover navigation WITHIN this
+  // app; a real page reload bypasses React entirely, so this is the only
+  // way to warn before an in-progress edit is lost that way.
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    function handler(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [hasUnsavedChanges]);
+
   async function handleFileSelected(file: File) {
     setError(null);
     setUploading(true);
@@ -213,6 +227,24 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
       setError(err instanceof ApiRequestError ? err.message : "Could not save changes.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** Used by every navigation action that leaves this document entirely
+   * (Back to batch, Prev/Next image) - goToRecord already auto-saves when
+   * switching records within the SAME document, but those three actions
+   * previously called onBack/onNavigateToDocument directly with no save
+   * at all, silently discarding an in-progress edit. Returns false (and
+   * leaves the current draft/error state alone) if the save fails, so the
+   * caller can refuse to navigate rather than losing the edit. */
+  async function saveBeforeLeaving(): Promise<boolean> {
+    if (!hasUnsavedChanges) return true;
+    try {
+      await persistDraft(selectedRecordIndex, dirtyFields);
+      return true;
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : "Could not save changes before navigating away.");
+      return false;
     }
   }
 
@@ -323,8 +355,14 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
         <div className="title-block">
           {onBack && (
             <div className="batch-nav-row">
-              <button className="back-link" onClick={onBack}>
-                ← Back to batch
+              <button
+                className="secondary-button"
+                style={{ padding: "6px 14px", fontSize: 13, fontWeight: 600 }}
+                onClick={async () => {
+                  if (await saveBeforeLeaving()) onBack();
+                }}
+              >
+                ← Back to batch (generate XML once every image is reviewed)
               </button>
               {batchImages && batchPosition !== -1 && (
                 <span className="batch-nav-controls">
@@ -332,9 +370,9 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
                     className="secondary-button"
                     style={{ padding: "3px 10px", fontSize: 12 }}
                     disabled={!adjacentBatchDocument(-1)}
-                    onClick={() => {
+                    onClick={async () => {
                       const prev = adjacentBatchDocument(-1);
-                      if (prev) onNavigateToDocument?.(prev);
+                      if (prev && (await saveBeforeLeaving())) onNavigateToDocument?.(prev);
                     }}
                   >
                     ◀ Prev image
@@ -346,9 +384,9 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
                     className="secondary-button"
                     style={{ padding: "3px 10px", fontSize: 12 }}
                     disabled={!adjacentBatchDocument(1)}
-                    onClick={() => {
+                    onClick={async () => {
                       const next = adjacentBatchDocument(1);
-                      if (next) onNavigateToDocument?.(next);
+                      if (next && (await saveBeforeLeaving())) onNavigateToDocument?.(next);
                     }}
                   >
                     Next image ▶
@@ -422,15 +460,40 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
           </span>
           <span>
             <a href={excelExportUrl(documentId)}>Download Excel</a>
-            {"  ·  "}
-            <a href={xmlExportUrl(documentId)}>Download XML</a>
+            {/* The per-image XML download is deliberately hidden in batch
+                mode - the batch's own combined XML (back on the batch
+                screen) is the one real deliverable there; this link still
+                shows for the single-document (non-batch) flow. */}
+            {!batchId && (
+              <>
+                {"  ·  "}
+                <a href={xmlExportUrl(documentId)}>Download XML</a>
+              </>
+            )}
+            {batchId && (
+              <>
+                {"  ·  "}
+                <button
+                  className="primary-button"
+                  style={{ padding: "4px 12px", fontSize: 12.5 }}
+                  onClick={async () => {
+                    if (await saveBeforeLeaving()) onBack?.();
+                  }}
+                >
+                  {adjacentBatchDocument(1) ? "Return to batch" : "This was the last image - return to batch to generate XML"}
+                </button>
+              </>
+            )}
             {adjacentBatchDocument(1) && (
               <>
                 {"  ·  "}
                 <button
                   className="primary-button"
                   style={{ padding: "4px 12px", fontSize: 12.5 }}
-                  onClick={() => onNavigateToDocument?.(adjacentBatchDocument(1)!)}
+                  onClick={async () => {
+                    const next = adjacentBatchDocument(1);
+                    if (next && (await saveBeforeLeaving())) onNavigateToDocument?.(next);
+                  }}
                 >
                   Next image ▶
                 </button>
@@ -453,7 +516,10 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
                 <button
                   className="primary-button"
                   style={{ padding: "4px 12px", fontSize: 12.5 }}
-                  onClick={() => onNavigateToDocument?.(adjacentBatchDocument(1)!)}
+                  onClick={async () => {
+                    const next = adjacentBatchDocument(1);
+                    if (next && (await saveBeforeLeaving())) onNavigateToDocument?.(next);
+                  }}
                 >
                   Next image ▶
                 </button>
@@ -491,6 +557,7 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
         approved={!!currentEntry?.approved}
         hasDocument={!!documentId && !!record}
         submitting={submitting}
+        isInBatch={!!batchId}
         onSelectImage={() => fileInputRef.current?.click()}
         onSave={handleSave}
         onCancelEdit={handleCancelEdit}

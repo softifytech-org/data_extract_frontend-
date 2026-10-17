@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import BatchPage from "./pages/BatchPage";
 import MainPage from "./pages/MainPage";
 
@@ -7,54 +7,17 @@ type View =
   | { kind: "batch" }
   | { kind: "review"; documentId: string; batchId?: string };
 
-const VIEW_STORAGE_KEY = "app_view";
-const BATCH_STORAGE_KEY = "app_active_batch_id";
-
-// A real page refresh resets all React state - without this, "Batch
-// upload" would come back empty after a refresh even though the batch
-// itself is still there on the backend (confirmed directly: this gap
-// was found by a real end-to-end browser test, not guessed at).
-function loadInitialView(): View {
-  try {
-    const raw = localStorage.getItem(VIEW_STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as View;
-  } catch {
-    // corrupted or inaccessible storage - fall back to the default view
-  }
-  return { kind: "single" };
-}
-
-function loadInitialBatchId(): string | null {
-  try {
-    return localStorage.getItem(BATCH_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
+// Deliberately NOT persisted across a real page reload (no localStorage) -
+// an earlier version remembered the last view/batch so a refresh would
+// resume it, but that was reported as confusing in practice (a refresh
+// kept landing back on old work instead of a clean start, even after
+// that work was done). `activeBatchId`/`view` are plain in-memory React
+// state now: they still let you bounce between "review" and "batch"
+// freely WITHIN the same session (no data lost, same batch reopens), but
+// an actual browser refresh always starts clean, no exceptions.
 export default function App() {
-  const [view, setView] = useState<View>(loadInitialView);
-  // Remembered independently of `view` so switching to "review" and back
-  // to "batch" (or refreshing the page entirely) reopens the SAME batch
-  // rather than losing it.
-  const [activeBatchId, setActiveBatchId] = useState<string | null>(loadInitialBatchId);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(view));
-    } catch {
-      // per-viewer convenience only - never required for correctness
-    }
-  }, [view]);
-
-  useEffect(() => {
-    try {
-      if (activeBatchId) localStorage.setItem(BATCH_STORAGE_KEY, activeBatchId);
-      else localStorage.removeItem(BATCH_STORAGE_KEY);
-    } catch {
-      // per-viewer convenience only - never required for correctness
-    }
-  }, [activeBatchId]);
+  const [view, setView] = useState<View>({ kind: "single" });
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
 
   const navMode = view.kind === "review" ? "batch" : view.kind;
 
@@ -91,6 +54,7 @@ export default function App() {
             initialBatchId={activeBatchId ?? undefined}
             onBatchCreated={setActiveBatchId}
             onReviewDocument={(documentId, batchId) => setView({ kind: "review", documentId, batchId })}
+            onBatchCleared={() => setActiveBatchId(null)}
           />
         )}
         {view.kind === "review" && (

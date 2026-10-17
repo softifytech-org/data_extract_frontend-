@@ -15,6 +15,7 @@ interface Props {
   approved: boolean;
   hasDocument: boolean;
   submitting: boolean;
+  isInBatch?: boolean;
   onSelectImage: () => void;
   onSave: () => void;
   onCancelEdit: () => void;
@@ -38,6 +39,7 @@ export default function LegacyToolbar({
   approved,
   hasDocument,
   submitting,
+  isInBatch,
   onSelectImage,
   onSave,
   onCancelEdit,
@@ -77,14 +79,16 @@ export default function LegacyToolbar({
         >
           Discard Edits
         </button>
-        <button
-          className="legacy-btn legacy-btn-primary"
-          onClick={onSubmit}
-          disabled={!hasDocument || submitting}
-          title="Writes every record in THIS document out to XML right now (does not require approval first, and is separate from a batch's own combined submission)"
-        >
-          {submitting ? "Generating XML…" : "Generate XML"}
-        </button>
+        {!isInBatch && (
+          <button
+            className="legacy-btn legacy-btn-primary"
+            onClick={onSubmit}
+            disabled={!hasDocument || submitting}
+            title="Writes every record in this document out to XML right now (does not require approval first)"
+          >
+            {submitting ? "Generating…" : "Generate XML"}
+          </button>
+        )}
         <button
           className="legacy-btn legacy-btn-danger"
           onClick={onExit}
