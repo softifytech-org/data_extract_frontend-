@@ -4,12 +4,13 @@ import {
   BatchDetail,
   BatchNotReadyError,
   BatchSubmissionStatus,
+  clearBatch,
   type DocumentLayout,
   downloadBatchDocumentExcel,
-  downloadBatchDocumentXml,
   downloadBatchSubmissionXml,
   getBatch,
   getBatchSubmissionStatus,
+  removeBatchImage,
   submitBatch,
   uploadBatch,
 } from "../services/api";
@@ -137,6 +138,10 @@ interface Props {
    * navigation without the reviewer ever coming back to this screen
    * between images. */
   onReviewDocument?: (documentId: string, batchId: string) => void;
+  /** Called once a batch has been cleared (its working data removed
+   * after a successful submit+download) - the parent must forget this
+   * batch id so a refresh doesn't keep resuming it. */
+  onBatchCleared?: () => void;
 }
 
 /**
@@ -150,7 +155,7 @@ interface Props {
  * decision) - anyone who can reach this page can see and act on any
  * batch, not just ones they created.
  */
-export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocument }: Props) {
+export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocument, onBatchCleared }: Props) {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [selectionNotices, setSelectionNotices] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -161,6 +166,10 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
   const [submitting, setSubmitting] = useState(false);
   const [submitBlockers, setSubmitBlockers] = useState<string[] | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [removingPosition, setRemovingPosition] = useState<number | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   // One layout applies to the whole batch (see backend: app/api/batches.py's
   // create_batch) - "old" pre-selected as the majority real-world format.
   const [layout, setLayout] = useState<DocumentLayout>("old");
@@ -289,6 +298,57 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
     }
   }
 
+  async function handleClearBatch() {
+    if (!batch) return;
+    if (
+      !window.confirm(
+        "Clear this completed batch?\n\nThis removes its uploaded images and reviewed records from this " +
+          "app. The combined XML you already downloaded is NOT affected - only clear this once you have it saved."
+      )
+    ) {
+      return;
+    }
+    setClearing(true);
+    setClearError(null);
+    try {
+      const result = await clearBatch(batch.id);
+      if (result.errors.length > 0) {
+        // Some images failed to clear - do NOT pretend this succeeded or
+        // forget the batch id, since its data (and the inconsistent
+        // partial state) is still there.
+        setClearError(
+          `Cleared ${result.images_cleared} of ${batch.images.length} image(s). ` +
+            `Some could not be cleared: ${result.errors.join("; ")}`
+        );
+        return;
+      }
+      stopPolling();
+      setBatch(null);
+      setSubmission(null);
+      setLastUploadedLayout(null);
+      onBatchCleared?.();
+    } catch (err) {
+      setClearError(err instanceof ApiRequestError ? err.message : "Could not clear this batch. Please try again.");
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function handleRemoveImage(position: number, filename: string) {
+    if (!batch) return;
+    if (!window.confirm(`Remove "${filename}" from this batch? This cannot be undone.`)) return;
+    setRemovingPosition(position);
+    setRemoveError(null);
+    try {
+      const updated = await removeBatchImage(batch.id, position);
+      setBatch(updated);
+    } catch (err) {
+      setRemoveError(err instanceof ApiRequestError ? err.message : "Could not remove this image. Please try again.");
+    } finally {
+      setRemovingPosition(null);
+    }
+  }
+
   return (
     <div>
       <input
@@ -401,103 +461,153 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
 
       {uploadError && <div className="error-banner">{uploadError}</div>}
 
-      {batch && (
-        <div className="document-list" style={{ marginTop: 24 }}>
-          <h2>
-            Batch review · {batch.image_count} image(s){ACTIVE_STATUSES.has(batch.status) ? " · refreshing…" : ""}
-            {lastUploadedLayout && (
-              <span className="layout-badge" style={{ marginLeft: 10 }}>
-                Form type: <strong>{lastUploadedLayout === "new" ? "Compact Form" : "Standard Form"}</strong>
-              </span>
-            )}
-          </h2>
-          <p className="batch-review-hint">
-            Select an image to inspect its extracted records. Review and approve each record before submitting
-            the batch.
-          </p>
-          {batch.images.map((img) => {
-            const reviewable = img.status === "completed" || img.status === "needs_review";
-            return (
-              <div className="document-list-item batch-image-row" key={img.document_id}>
-                <div className="batch-image-info">
-                  <span className="filename">
-                    #{img.position + 1} {img.original_filename}
-                  </span>
-                  <span className={`meta overall-confidence ${statusBadgeClass(img.status)}`} style={{ padding: "2px 8px" }}>
-                    {statusLabel(img.status)}
-                  </span>
-                  {img.status === "failed" && img.error && (
-                    <span className="meta" title={img.error}>
-                      (error - hover for details)
+      {batch && (() => {
+        const reviewedCount = batch.images.filter((i) => i.all_records_approved === true).length;
+        const total = batch.images.length;
+        const allReviewed = total > 0 && reviewedCount === total;
+        const notReady = batch.images.filter((i) => i.all_records_approved !== true);
+        const isSubmitted = !!submission?.submitted;
+
+        return (
+          <div className="document-list" style={{ marginTop: 24 }}>
+            <h2>
+              Batch review · {reviewedCount} of {total} image(s) reviewed
+              {ACTIVE_STATUSES.has(batch.status) ? " · refreshing…" : ""}
+              {lastUploadedLayout && (
+                <span className="layout-badge" style={{ marginLeft: 10 }}>
+                  Form type: <strong>{lastUploadedLayout === "new" ? "Compact Form" : "Standard Form"}</strong>
+                </span>
+              )}
+            </h2>
+            <p className="batch-review-hint">
+              {isSubmitted
+                ? "This batch has already been submitted. You can still review images or download the combined XML again below."
+                : allReviewed
+                ? "Every image is reviewed and approved - click Generate Combined XML below to export this batch."
+                : "Open each image, correct any mistakes, and approve its records. Once every image is reviewed, Generate Combined XML below exports all of them in one file."}
+            </p>
+            {batch.images.map((img, idx) => {
+              const reviewable = img.status === "completed" || img.status === "needs_review";
+              const reviewed = img.all_records_approved === true;
+              return (
+                <div className="document-list-item batch-image-row" key={img.document_id}>
+                  <div className="batch-image-info">
+                    <span className="filename">
+                      #{idx + 1} {img.original_filename}
                     </span>
-                  )}
-                </div>
-                <div className="batch-image-actions">
-                  {reviewable && onReviewDocument && (
-                    <button
-                      className="primary-button"
-                      style={{ padding: "6px 14px", fontSize: 13 }}
-                      onClick={() => onReviewDocument(img.document_id, batch.id)}
-                      aria-label={`Review image ${img.position + 1}`}
+                    <span
+                      className={`meta overall-confidence ${reviewed ? "confidence-high" : statusBadgeClass(img.status)}`}
+                      style={{ padding: "2px 8px" }}
                     >
-                      Review
-                    </button>
-                  )}
-                  {reviewable && (
-                    <>
+                      {reviewed ? "Reviewed & approved" : statusLabel(img.status)}
+                    </span>
+                    {img.record_count !== null && (
+                      <span className="meta">
+                        {img.record_count} record{img.record_count === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {img.status === "failed" && img.error && (
+                      <span className="meta" title={img.error}>
+                        (error - hover for details)
+                      </span>
+                    )}
+                  </div>
+                  <div className="batch-image-actions">
+                    {reviewable && onReviewDocument && (
                       <button
-                        className="secondary-button"
-                        style={{ padding: "2px 10px", fontSize: 12 }}
-                        onClick={() => downloadBatchDocumentXml(img.document_id)}
+                        className="primary-button"
+                        style={{ padding: "6px 14px", fontSize: 13 }}
+                        onClick={() => onReviewDocument(img.document_id, batch.id)}
+                        aria-label={`Review image ${idx + 1}`}
                       >
-                        XML
+                        {reviewed ? "Review again" : "Review"}
                       </button>
+                    )}
+                    {reviewable && (
                       <button
                         className="secondary-button"
                         style={{ padding: "2px 10px", fontSize: 12 }}
                         onClick={() => downloadBatchDocumentExcel(img.document_id)}
+                        title="Preview this single image's extracted fields as a spreadsheet"
                       >
                         Excel
                       </button>
-                    </>
-                  )}
+                    )}
+                    {!submission?.submitted && (
+                      <button
+                        className="secondary-button"
+                        style={{ padding: "2px 10px", fontSize: 12, color: "var(--danger, #b91c1c)" }}
+                        disabled={removingPosition === img.position}
+                        onClick={() => handleRemoveImage(img.position, img.original_filename)}
+                        title="Remove this image from the batch entirely - cannot be undone"
+                      >
+                        {removingPosition === img.position ? "Removing…" : "Remove"}
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+            {removeError && <div className="error-banner">{removeError}</div>}
 
-          <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-            {submission?.submitted ? (
-              <div className="approved-banner">
-                <span>
-                  Batch submitted · {submission.record_count} record(s)
-                  {submission.submitted_at ? ` on ${new Date(submission.submitted_at).toLocaleString()}` : ""}
-                </span>
-                <span>
-                  <button className="secondary-button" onClick={() => downloadBatchSubmissionXml(batch.id)}>
-                    Download batch XML
-                  </button>
-                </span>
-              </div>
-            ) : (
-              <button className="primary-button" disabled={submitting} onClick={handleSubmitBatch}>
-                {submitting ? "Submitting…" : "Submit batch"}
-              </button>
-            )}
-            {submitBlockers && submitBlockers.length > 0 && (
-              <div className="error-banner">
-                <strong>Batch is not ready to submit:</strong>
-                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                  {submitBlockers.map((b, i) => (
-                    <li key={i}>{b}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {submitError && <div className="error-banner">{submitError}</div>}
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+              {!allReviewed && !isSubmitted && notReady.length > 0 && (
+                <div className="error-banner">
+                  <strong>
+                    {notReady.length} image{notReady.length === 1 ? "" : "s"} still need review before you can
+                    generate the batch XML:
+                  </strong>
+                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    {notReady.map((img) => (
+                      <li key={img.document_id}>
+                        #{img.position + 1} {img.original_filename} - {statusLabel(img.status)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {isSubmitted ? (
+                <div className="approved-banner">
+                  <span>
+                    Batch submitted · {submission!.record_count} record(s)
+                    {submission!.submitted_at ? ` on ${new Date(submission!.submitted_at).toLocaleString()}` : ""}
+                  </span>
+                  <span>
+                    <button className="secondary-button" onClick={() => downloadBatchSubmissionXml(batch.id)}>
+                      Export Combined XML
+                    </button>
+                    {"  "}
+                    <button className="secondary-button" disabled={clearing} onClick={handleClearBatch}>
+                      {clearing ? "Clearing…" : "Clear this batch"}
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <button
+                  className="primary-button"
+                  disabled={submitting || !allReviewed}
+                  onClick={handleSubmitBatch}
+                  title={!allReviewed ? "Every image must be reviewed and approved first" : undefined}
+                >
+                  {submitting ? "Generating…" : "Generate Combined XML"}
+                </button>
+              )}
+              {submitBlockers && submitBlockers.length > 0 && (
+                <div className="error-banner">
+                  <strong>Batch is not ready to submit:</strong>
+                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    {submitBlockers.map((b, i) => (
+                      <li key={i}>{b}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {submitError && <div className="error-banner">{submitError}</div>}
+              {clearError && <div className="error-banner">{clearError}</div>}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

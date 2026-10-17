@@ -150,6 +150,17 @@ export interface BatchImageStatus {
   original_filename: string;
   status: string;
   error: string | null;
+  // Both null until the image has actually been processed (status
+  // "completed"/"needs_review") - never 0/false for "not processed yet",
+  // which would be indistinguishable from "processed with zero records".
+  record_count: number | null;
+  all_records_approved: boolean | null;
+}
+
+export interface BatchClearResponse {
+  batch_id: string;
+  images_cleared: number;
+  errors: string[];
 }
 
 export interface BatchSummary {
@@ -198,6 +209,26 @@ export async function listBatches(): Promise<BatchSummary[]> {
 
 export async function getBatch(batchId: string): Promise<BatchDetail> {
   const res = await fetch(`${BATCH_BASE}/${batchId}`);
+  return handle(res);
+}
+
+/** Removes one image from a batch that hasn't been submitted yet - for a
+ * wrong/unwanted upload, as opposed to clearBatch's whole-batch cleanup
+ * after a real submission exists. Returns the updated batch so the
+ * caller can refresh its list from the response instead of a second
+ * round trip. */
+export async function removeBatchImage(batchId: string, position: number): Promise<BatchDetail> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/images/${position}`, { method: "DELETE" });
+  return handle(res);
+}
+
+/** Only succeeds once the batch has a real submission (see the backend's
+ * clear_batch) - never call this on a batch the reviewer hasn't already
+ * submitted and downloaded. Best-effort per-image: a non-empty `errors`
+ * list means some of the batch's data could not be cleared and must be
+ * surfaced to the user, not treated as a silent success. */
+export async function clearBatch(batchId: string): Promise<BatchClearResponse> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}`, { method: "DELETE" });
   return handle(res);
 }
 
