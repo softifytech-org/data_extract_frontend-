@@ -19,7 +19,7 @@ import {
   uploadDocument,
   xmlExportUrl,
 } from "../services/api";
-import type { DocumentRecord, ExtractedField } from "../types/document";
+import type { BoundingBox, DocumentRecord, ExtractedField } from "../types/document";
 
 const ACCEPTED = ".jpg,.jpeg,.png,.pdf";
 const BLANK_FIELDS = buildBlankFields();
@@ -29,6 +29,48 @@ function confidenceTier(score: number | null): "high" | "medium" | "low" {
   if (score >= 95) return "high";
   if (score >= 80) return "medium";
   return "low";
+}
+
+// Mirrors app/services/extraction/fields.py's OCR_FIELD_ORDER (every
+// non-derived field, in form order) - the same order
+// services/validation/remark.py walks server-side, so the client-side
+// preview below lists invalid fields in the identical sequence the
+// server would.
+const OCR_FIELD_ORDER = [
+  "record_no", "customer_name", "email_address", "res_address", "city_1", "state_1", "zip_1",
+  "phno_1", "country_1", "sex_1", "d_birth", "height", "weight", "blood_group", "billing_name",
+  "shipper_name", "city_2", "state_2", "zip_2", "country_2", "phno_2", "alcoholic", "smoker",
+  "past_surg", "diabetic", "allergies", "policy_no", "d_b_life_assure", "p_inst", "name_p_holder",
+  "stm_name", "stm_code", "dob", "sex_2", "card_name", "medicine", "dosage", "tablets",
+  "pill_rate", "cost", "shipping_cost", "total_amount",
+];
+const EXPLICIT_NA_VALUES = new Set(["N.A", "N.A.", "NA", "N/A", "NONE"]);
+function isExplicitNA(value: string | null): boolean {
+  if (!value) return false;
+  return EXPLICIT_NA_VALUES.has(value.trim().toUpperCase().replace(/\.$/, ""));
+}
+
+// Client-side mirror of generate_remark() in
+// services/validation/remark.py (BN_WorkFlow.pdf rule 43) - lets the
+// Remark field update the instant a reviewer marks a field invalid,
+// rather than only after the next save round-trip. The server
+// recomputes the same thing on save, so this is a preview, not a new
+// source of truth.
+function computeRemark(fields: Record<string, ExtractedField>): string {
+  const invalidLabels: string[] = [];
+  for (const name of OCR_FIELD_ORDER) {
+    const field = fields[name];
+    if (!field) continue;
+    if (isExplicitNA(field.value)) {
+      invalidLabels.push(field.label);
+    } else if (field.value && field.validation.format_valid === false) {
+      invalidLabels.push(field.label);
+    }
+  }
+  if (invalidLabels.length === 0) return "N.A";
+  if (invalidLabels.length === 1) return `${invalidLabels[0]} is invalid`;
+  if (invalidLabels.length === 2) return `${invalidLabels[0]} and ${invalidLabels[1]} are invalid`;
+  return `${invalidLabels.slice(0, -1).join(", ")} and ${invalidLabels[invalidLabels.length - 1]} are invalid`;
 }
 
 interface Props {
@@ -63,6 +105,10 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
   const [selectedRecordIndex, setSelectedRecordIndex] = useState(1);
   const [draft, setDraft] = useState<Record<string, ExtractedField>>(BLANK_FIELDS);
   const [selectedField, setSelectedField] = useState<string | null>(null);
+  // Owned here, not inside DocumentViewer - the panel header's own "View
+  // full image"/"Back to record" link is the only way to switch (no
+  // in-panel toolbar), and it needs to know which one to show.
+  const [imageViewMode, setImageViewMode] = useState<"record" | "full">("record");
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [loadingExisting, setLoadingExisting] = useState(!!initialDocumentId);
@@ -198,10 +244,20 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
   }
 
   function handleFieldChange(fieldName: string, value: string) {
-    setDraft((prev) => ({
-      ...prev,
-      [fieldName]: { ...prev[fieldName], value: value.length ? value : null },
-    }));
+    setDraft((prev) => {
+      const next = {
+        ...prev,
+        [fieldName]: { ...prev[fieldName], value: value.length ? value : null },
+      };
+      // Remark is otherwise only recomputed server-side on Save (see
+      // services/validation/remark.py) - mirrored here so marking a
+      // field invalid (the IN button) shows up in Remark immediately,
+      // not just after the next save round-trip.
+      if (next.remark) {
+        next.remark = { ...next.remark, value: computeRemark(next) };
+      }
+      return next;
+    });
   }
 
   function handleCancelEdit() {
@@ -331,6 +387,91 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
 
   const tier = confidenceTier(record?.overall_confidence ?? null);
   const highlight = selectedField ? draft[selectedField]?.bounding_box ?? null : null;
+  // The whole selected record's own region on the page image - this is
+  // what DocumentViewer crops/zooms in on so a reviewer only ever sees
+  // the one record in front of them, not the whole dense page. Built
+  // from the saved record (bounding boxes/region are OCR-derived and
+  // never change on edit), not the in-progress draft, so it doesn't
+  // recompute/recrop on every keystroke.
+  const recordRegion = useMemo<BoundingBox | null>(() => {
+    if (!currentEntry || !record) return null;
+
+    // Preferred: the server's own record boundary (processing.py /
+    // azure_processing.py) - computed from the SAME slice used to decide
+    // which OCR words belong to this record, before extraction ever ran.
+    if (currentEntry.region) {
+      const own = currentEntry.region;
+      const idx = record.records.findIndex((r) => r.record_index === currentEntry.record_index);
+      const prevRegion = idx > 0 ? record.records[idx - 1]?.region : null;
+      const nextRegion = idx !== -1 && idx < record.records.length - 1 ? record.records[idx + 1]?.region : null;
+      // The server deliberately lets two adjacent records' own regions
+      // overlap by a couple of pixels (so a word sitting right on the
+      // boundary line isn't lost during extraction) - correct for
+      // extraction, but a VIEW meant to isolate one record must never
+      // show the sliver of the next one that overlap would otherwise
+      // reveal, so it's clipped out here against whatever the immediate
+      // neighbor itself reports as ITS own start/end.
+      const neighborFloor = prevRegion ? prevRegion.y + prevRegion.height : -Infinity;
+      const neighborCeiling = nextRegion ? nextRegion.y : Infinity;
+      let yStart = prevRegion ? Math.max(own.y, neighborFloor) : own.y;
+      let yEnd = nextRegion ? Math.min(own.y + own.height, neighborCeiling) : own.y + own.height;
+      // The trim above can, in principle, cut into this record's OWN text
+      // if a field's bounding box sits right at (or just past) the
+      // boundary line shared with its neighbor - so widen yStart/yEnd
+      // back out to cover every one of THIS record's own field boxes.
+      // Widening is capped to a small slop beyond this record's own
+      // height so a single mis-assigned field box (pointing into the
+      // next record) can't drag the crop a whole extra line down, even
+      // on OCR passes where the neighbor's own reported boundary is
+      // itself a few px late.
+      const EXPAND_SLOP = 20;
+      const ownBoxes = Object.values(currentEntry.fields)
+        .map((f) => f.bounding_box)
+        .filter((b): b is BoundingBox => b !== null);
+      for (const b of ownBoxes) {
+        yStart = Math.min(yStart, Math.max(b.y, own.y - EXPAND_SLOP));
+        yEnd = Math.max(yEnd, Math.min(b.y + b.height, own.y + own.height + EXPAND_SLOP));
+      }
+      // ...but never let that widening cross into where the adjacent
+      // record's OWN detected boundary actually begins - an inaccurate
+      // or oversized field box (a separate, real extraction-accuracy
+      // issue this view can't fix) should widen the crop within the
+      // legitimate margin only, never reveal the neighbor's own content.
+      yStart = Math.max(yStart, neighborFloor);
+      yEnd = Math.min(yEnd, neighborCeiling);
+      return {
+        page: own.page,
+        x: own.x,
+        y: yStart,
+        width: own.width,
+        height: Math.max(20, yEnd - yStart),
+      };
+    }
+
+    // Fallback for a record saved before `region` existed: approximate it
+    // from the union of this record's own field bounding boxes. Less
+    // reliable - a field whose box strayed into a neighboring record's
+    // row (a real, separate extraction-accuracy issue, not something this
+    // view can fix) can pull the crop wider than the true record - so the
+    // padding here is kept minimal on purpose rather than compensated for.
+    const boxes = Object.values(currentEntry.fields)
+      .map((f) => f.bounding_box)
+      .filter((b): b is BoundingBox => b !== null);
+    if (boxes.length === 0) return null;
+    const minX = Math.min(...boxes.map((b) => b.x));
+    const minY = Math.min(...boxes.map((b) => b.y));
+    const maxRight = Math.max(...boxes.map((b) => b.x + b.width));
+    const maxBottom = Math.max(...boxes.map((b) => b.y + b.height));
+    const padX = Math.max(10, (maxRight - minX) * 0.015);
+    const padY = Math.max(5, (maxBottom - minY) * 0.03);
+    return {
+      page: boxes[0].page,
+      x: Math.max(0, minX - padX),
+      y: Math.max(0, minY - padY),
+      width: maxRight - minX + padX * 2,
+      height: maxBottom - minY + padY * 2,
+    };
+  }, [currentEntry]);
   const totalReviewAcrossDoc =
     record?.records.reduce(
       (sum, r) => sum + Object.values(r.fields).filter((f) => f.status === "needs_review").length,
@@ -570,44 +711,70 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
         onSubmit={handleSubmit}
       />
 
-      <div className="review-grid three-col">
-        <div className="panel">
+      <div className="workspace">
+        <div className="panel workspace-records">
           <div className="panel-header">Records ({record?.record_count ?? 0})</div>
           <RecordList records={record?.records ?? []} selectedIndex={selectedRecordIndex} onSelect={goToRecord} />
         </div>
 
-        <div className="panel">
-          <div className="panel-header">Document</div>
-          {documentId ? (
-            <DocumentViewer documentId={documentId} fileType={record?.source_file.file_type ?? "image"} highlight={highlight} />
-          ) : (
-            <div className="empty-document-panel">
-              {uploading
-                ? "Uploading…"
-                : loadingExisting
-                ? "Loading…"
-                : "No document selected yet - click Select Image above."}
+        <div className="workspace-main">
+          <div className="panel workspace-image">
+            <div className="panel-header">
+              <span>Document{currentEntry && !processing ? ` · Record #${selectedRecordIndex}` : ""}</span>
+              {documentId && (
+                <button
+                  type="button"
+                  className="view-full-image-link"
+                  onClick={() => setImageViewMode((m) => (m === "full" ? "record" : "full"))}
+                  title={
+                    imageViewMode === "full"
+                      ? "Switch back to just this record's own area"
+                      : "Switch the image panel to the complete original document"
+                  }
+                >
+                  {imageViewMode === "full" ? "Back to record" : "View full image"}
+                </button>
+              )}
             </div>
-          )}
-        </div>
-
-        <div className="panel">
-          <div className="panel-header">
-            {processing
-              ? "Processing… extracting fields"
-              : `Record #${selectedRecordIndex} ${currentEntry?.approved ? "· ✓ approved" : ""}`}
+            {documentId ? (
+              <DocumentViewer
+                documentId={documentId}
+                fileType={record?.source_file.file_type ?? "image"}
+                recordIndex={selectedRecordIndex}
+                highlight={highlight}
+                recordRegion={recordRegion}
+                viewMode={imageViewMode}
+                onViewModeChange={setImageViewMode}
+              />
+            ) : (
+              <div className="empty-document-panel">
+                {uploading
+                  ? "Uploading…"
+                  : loadingExisting
+                  ? "Loading…"
+                  : "No document selected yet - click Select Image above."}
+              </div>
+            )}
           </div>
-          {showData && currentEntry ? (
-            <pre className="raw-data-view">{JSON.stringify(currentEntry, null, 2)}</pre>
-          ) : (
-            <LegacyForm
-              fields={draft}
-              selectedField={selectedField}
-              hasDocument={!!record}
-              onSelectField={setSelectedField}
-              onChangeField={handleFieldChange}
-            />
-          )}
+
+          <div className="panel workspace-fields">
+            <div className="panel-header">
+              {processing
+                ? "Processing… extracting fields"
+                : `Record #${selectedRecordIndex} ${currentEntry?.approved ? "· ✓ approved" : ""}`}
+            </div>
+            {showData && currentEntry ? (
+              <pre className="raw-data-view">{JSON.stringify(currentEntry, null, 2)}</pre>
+            ) : (
+              <LegacyForm
+                fields={draft}
+                selectedField={selectedField}
+                hasDocument={!!record}
+                onSelectField={setSelectedField}
+                onChangeField={handleFieldChange}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

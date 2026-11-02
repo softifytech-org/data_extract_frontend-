@@ -70,6 +70,12 @@ export interface AuditInfo {
 export interface RecordEntry {
   record_index: number;
   page: number;
+  // This record's own slice of the page, computed server-side from the
+  // same boundary used to decide which OCR words belong to it - not
+  // derived from field bounding boxes, which can include a field that
+  // strayed into a neighboring record's row. Null on any record saved
+  // before this field existed.
+  region: BoundingBox | null;
   fields: Record<string, ExtractedField>;
   cross_field_warnings: string[];
   overall_confidence: number | null;

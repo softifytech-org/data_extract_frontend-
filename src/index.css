@@ -366,26 +366,58 @@ input {
   padding: 0;
 }
 
-.review-grid {
+/* --- Workspace: records sidebar | (record image above, fields below) ---
+   No fixed/measured height here - the fields panel can hold a LOT of
+   content (40+ fields), and forcing it into a constrained height meant
+   either a cramped independently-scrolling panel or a squeezed image.
+   This grows naturally with its content and the PAGE scrolls when
+   needed, same as the records sidebar already did. */
+.workspace {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  grid-template-columns: 260px 1fr;
+  gap: 16px;
   align-items: start;
 }
 
-.review-grid.three-col {
-  grid-template-columns: 210px 1fr 1fr;
+.workspace-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-@media (max-width: 1100px) {
-  .review-grid.three-col {
-    grid-template-columns: 1fr;
+/* Pinned near the top of the page as the reviewer scrolls down through
+   the fields below it - without this, scrolling to reach fields near
+   the bottom (Remark included) scrolls the record's own image out of
+   view entirely, defeating the point of comparing them side by side.
+   Sticks relative to the page's own scroll (there's no closer scrolling
+   ancestor), which is exactly what's wanted here. */
+.workspace-image {
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+}
+
+@media (max-width: 860px) {
+  .workspace-image {
+    position: static;
   }
 }
 
-@media (max-width: 900px) {
-  .review-grid {
+@media (max-width: 1200px) {
+  .workspace {
+    grid-template-columns: 220px 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .workspace {
     grid-template-columns: 1fr;
+  }
+  .workspace-records {
+    order: 2;
+  }
+  .workspace-main {
+    order: 1;
   }
 }
 
@@ -453,35 +485,141 @@ input {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-}
-
-.document-viewer {
-  position: relative;
-  overflow: auto;
-  max-height: 78vh;
-  background: #ececec;
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.document-viewer-inner {
+.view-full-image-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary-light);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.view-full-image-link:hover {
+  color: var(--primary-dark);
+}
+
+/* --- Image viewer: no in-panel toolbar - mode switching lives in the
+   parent's own panel header ("View full image"/"Back to record"). No
+   click/wheel zoom or drag-pan - the display is always the automatic
+   best fit, nothing for a reviewer to get stuck in. Record view adds a
+   cursor-follow magnifier instead (see .field-magnifier-hover). */
+.image-viewer {
+  background: #1c1f24;
+}
+
+.iv-viewport {
   position: relative;
-  display: inline-block;
+  /* `height` here is just the pre-JS fallback (DocumentViewer computes
+     and sets the real one inline every render - a record gets a height
+     snug to its own short, wide aspect ratio so it fills the panel with
+     no black bars and never needs to scroll; full-document gets a
+     generous fixed share of the window instead - see .iv-full-scroll
+     for how it handles content taller than that). min-height is
+     deliberately low so it acts as a floor for the computed value
+     instead of fighting it. */
+  flex: 0 0 auto;
+  min-height: 80px;
+  height: 46vh;
+  overflow: hidden;
+  user-select: none;
 }
 
-.document-viewer img {
-  display: block;
-  max-width: 100%;
-  height: auto;
+/* Full document is sized to fill the viewport's WIDTH, not shrunk to
+   guarantee the whole (often tall) page fits within a fixed height - so
+   unlike record mode, its content routinely exceeds the panel's own
+   height. overflow-y:auto here turns that into a real, native scrollbar
+   instead of continuing to shrink the image to avoid ever needing one. */
+.iv-viewport.iv-full-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-.bbox-highlight {
+.iv-stage {
   position: absolute;
-  border: 2px solid #ff5722;
-  background: rgba(255, 87, 34, 0.15);
-  border-radius: 3px;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* Cursor-follow magnifier (record view only, see DocumentViewer's
+   handleMouseMove) - rendered via a React portal straight into
+   document.body, NOT nested inside .iv-viewport or the surrounding
+   .panel, both of which clip their own content and would otherwise cut
+   this off whenever it extends past their box. position:fixed keeps it
+   independent of any ancestor's layout/scroll entirely. */
+.field-magnifier-hover {
+  position: fixed;
+  z-index: 50;
+  background-color: #14161a;
+  background-repeat: no-repeat;
+  border: 2px solid #39ff14;
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
   pointer-events: none;
-  transition: all 0.12s ease-out;
+}
+
+.iv-stage img {
+  display: block;
+  max-width: none;
+}
+
+.iv-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa4b2;
+  font-size: 13px;
+  z-index: 1;
+}
+
+/* Fluorescent green outline over the selected field's own OCR box -
+   border width is compensated by the current zoom (see the inline
+   style) so it reads as a consistent ~2px line on screen at any zoom
+   level, not a vanishingly thin or enormously thick one. */
+.iv-highlight {
+  position: absolute;
+  border-style: solid;
+  border-color: #39ff14;
+  background: rgba(57, 255, 20, 0.15);
+  box-shadow: 0 0 6px rgba(57, 255, 20, 0.65);
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+/* Record view's own crop gets a persistent fluorescent-green frame
+   around the whole cropped area (not just the selected field) - this is
+   on the VIEWPORT, not the stage, so it never pans/zooms with the image;
+   it just marks "everything inside this box is the one record". Full
+   document carries no such frame, since nothing there is "the crop". */
+.iv-viewport-record {
+  outline: 3px solid #39ff14;
+  outline-offset: -3px;
+  box-shadow: 0 0 10px rgba(57, 255, 20, 0.5) inset;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Bounds the record panel's own native scroll range to just its peek
+   margin (see RECORD_PEEK_MARGIN) instead of the whole page - its fixed
+   height plus overflow:hidden is what the viewport's own scroll above
+   actually measures. */
+.iv-record-scroll {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
 }
 
 .field-list {
@@ -678,17 +816,18 @@ input {
 }
 
 /* --- Legacy compact grid form --- */
-.legacy-form {
-  padding: 12px 16px;
-  max-height: 78vh;
-  overflow-y: auto;
-}
-
-.legacy-form-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 10px;
+/* A narrow base column (not one-size-fits-all) - short fields (SEX,
+   ZIP, a YES/NO) span a single ~130px column, medium fields span 2,
+   long ones (addresses, names, remark) span 3, so a short value doesn't
+   waste a wide cell and a long one isn't squeezed into one. Reflows its
+   own column count to whatever the panel's actual width is. No height
+   cap/scroll here - the panel grows with its content and the page
+   scrolls, same as .record-list's own sidebar already did. */
+.legacy-form-grid {
+  padding: 10px 14px 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px 10px;
 }
 
 .legacy-field {
@@ -696,23 +835,19 @@ input {
   flex-direction: column;
   gap: 2px;
   cursor: pointer;
+  min-width: 0;
 }
 
-.legacy-field.w-xs {
-  width: 98px;
+.legacy-field.w-medium {
+  grid-column: span 2;
 }
-.legacy-field.w-sm {
-  width: 120px;
-}
-.legacy-field.w-md {
-  width: 190px;
-}
-.legacy-field.w-lg {
-  width: 280px;
+
+.legacy-field.w-long {
+  grid-column: span 3;
 }
 
 .legacy-field-label {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -725,25 +860,64 @@ input {
   gap: 4px;
 }
 
+.invalid-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--text-muted);
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.invalid-toggle:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.invalid-toggle.active {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.legacy-field-control input.marked-invalid {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
 .legacy-field-control input,
 .legacy-field-control select {
   flex: 1;
   min-width: 0;
-  padding: 5px 7px;
+  padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  font-size: 12.5px;
+  font-size: 13px;
+  color: var(--text);
+  background: white;
 }
 
 .legacy-field-control input.needs-review,
 .legacy-field-control select.needs-review {
-  border-color: #e0b04a;
-  background: #fffdf7;
+  border-color: var(--warning);
+  background: #fffaf0;
 }
 
 .legacy-field-control input.verified,
 .legacy-field-control select.verified {
-  border-color: #bfe0c8;
+  border-color: var(--success);
 }
 
 .legacy-field-control input.human-edited,
@@ -771,7 +945,11 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 300px;
+  /* Matches the real DocumentViewer's own height (see .iv-viewport) so
+     the pre-upload placeholder doesn't change the panel's size once a
+     document actually loads. */
+  min-height: 420px;
+  height: 46vh;
   color: var(--text-muted);
   font-size: 13px;
   padding: 0 24px;
