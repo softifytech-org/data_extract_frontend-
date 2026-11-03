@@ -16,6 +16,13 @@ interface Props {
   hasDocument: boolean;
   submitting: boolean;
   isInBatch?: boolean;
+  /** Corrections saved locally (IndexedDB) but not yet confirmed by the
+   * backend - normally 0; >0 only while the network is actually down. */
+  offlinePendingCount?: number;
+  /** Briefly true right after the offline outbox drains and the backend
+   * has confirmed every queued correction - see MainPage's own comment
+   * on why this is distinct from the normal per-save "saving" state. */
+  justSynced?: boolean;
   onSelectImage: () => void;
   onSave: () => void;
   onCancelEdit: () => void;
@@ -40,6 +47,8 @@ export default function LegacyToolbar({
   hasDocument,
   submitting,
   isInBatch,
+  offlinePendingCount = 0,
+  justSynced = false,
   onSelectImage,
   onSave,
   onCancelEdit,
@@ -68,6 +77,13 @@ export default function LegacyToolbar({
         >
           {saving ? "Saving…" : "Save Changes"}
         </button>
+        {offlinePendingCount > 0 ? (
+          <span className="sync-status offline" title="The network is unreachable - these edits are saved on this device and will sync automatically once it's back">
+            Offline &middot; {offlinePendingCount} change{offlinePendingCount === 1 ? "" : "s"} waiting to sync
+          </span>
+        ) : justSynced ? (
+          <span className="sync-status synced">Saved</span>
+        ) : null}
         <button className="legacy-btn" onClick={onShowData} title="Show this record's raw data (for troubleshooting)">
           Show Raw Data
         </button>

@@ -169,10 +169,49 @@ export interface BatchSummary {
   image_count: number;
   created_at: string;
   updated_at: string;
+  // Computed server-side (see backend's _review_status) -
+  // "in_progress" | "paused" | "ready_for_export" | "exported" | "archived".
+  review_status: string;
+  archived: boolean;
+  completed_confirmed_at: string | null;
 }
 
 export interface BatchDetail extends BatchSummary {
   images: BatchImageStatus[];
+  images_completed: number;
+  records_completed: number;
+  records_total: number;
+}
+
+export interface BatchArchiveResponse {
+  batch_id: string;
+  archived: boolean;
+}
+
+export interface BatchCompletionConfirmedResponse {
+  batch_id: string;
+  completed_confirmed_at: string;
+  cleanup_scheduled_at: string;
+}
+
+export interface BatchExportVersion {
+  version: number;
+  record_count: number;
+  exported_at: string;
+}
+
+export interface DeviceResumeState {
+  resumable: boolean;
+  batch_id: string | null;
+  document_id: string | null;
+  record_index: number | null;
+  batch_status: string | null;
+  review_status: string | null;
+  image_count: number;
+  images_completed: number;
+  records_total: number;
+  records_completed: number;
+  last_saved_at: string | null;
 }
 
 export interface BatchUploadResponse {
@@ -202,8 +241,8 @@ export async function uploadBatch(files: File[], layout: DocumentLayout = "old")
   return handle(res);
 }
 
-export async function listBatches(): Promise<BatchSummary[]> {
-  const res = await fetch(BATCH_BASE);
+export async function listBatches(archived = false): Promise<BatchSummary[]> {
+  const res = await fetch(`${BATCH_BASE}?archived=${archived}`);
   return handle(res);
 }
 
@@ -266,6 +305,69 @@ export async function getBatchSubmissionStatus(batchId: string): Promise<BatchSu
 
 export function downloadBatchSubmissionXml(batchId: string): Promise<void> {
   return downloadFile(`${BATCH_BASE}/${batchId}/submission/download`, `${batchId}_submission.xml`);
+}
+
+/** The operator's explicit "I downloaded the XML, I'm done with this
+ * batch" confirmation - starts the backend's 24h retention countdown.
+ * Must actually reach the backend and succeed before the caller treats
+ * the batch as "done" (see BatchPage's handleStartNewBatch, which awaits
+ * this and does NOT reset the local screen on failure) - a local screen
+ * reset alone is never treated as equivalent to backend confirmation. */
+export async function confirmBatchCompletion(batchId: string): Promise<BatchCompletionConfirmedResponse> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/confirm-completion`, { method: "POST" });
+  return handle(res);
+}
+
+/** Hides a batch from the active workspace only - its images, records,
+ * corrections and export history are untouched and it reappears under
+ * archived=true. */
+export async function archiveBatch(batchId: string): Promise<BatchArchiveResponse> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/archive`, { method: "POST" });
+  return handle(res);
+}
+
+export async function unarchiveBatch(batchId: string): Promise<BatchArchiveResponse> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/unarchive`, { method: "POST" });
+  return handle(res);
+}
+
+/** Every export this batch has ever produced, newest first - distinct
+ * from getBatchSubmissionStatus, which only ever reports the latest one. */
+export async function listBatchExports(batchId: string): Promise<BatchExportVersion[]> {
+  const res = await fetch(`${BATCH_BASE}/${batchId}/exports`);
+  return handle(res);
+}
+
+/** Re-downloads one specific past export version, byte-for-byte as it
+ * was generated at the time - never affected by a later resubmit. */
+export function downloadBatchExportVersion(batchId: string, version: number): Promise<void> {
+  return downloadFile(`${BATCH_BASE}/${batchId}/exports/${version}/download`, `${batchId}_v${version}.xml`);
+}
+
+/** Reports where this device's operator currently is (debounced caller
+ * side - see services/device.ts) so the backend can offer it back on
+ * GET /resume even after a browser close, laptop restart, or cleared
+ * browser storage. Fire-and-forget by design: a dropped call here only
+ * costs a slightly stale resume point, never a lost correction (those
+ * are saved durably by the existing field-update endpoint). */
+export async function reportDeviceActivity(
+  deviceId: string,
+  activity: { batch_id?: string | null; document_id?: string | null; record_index?: number | null }
+): Promise<void> {
+  try {
+    await fetch(`${API_ROOT}/api/devices/${deviceId}/activity`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(activity),
+    });
+  } catch {
+    // Best-effort - see docstring above. Never surfaced to the operator.
+  }
+}
+
+export async function getDeviceResumeState(deviceId: string): Promise<DeviceResumeState> {
+  const res = await fetch(`${API_ROOT}/api/devices/${deviceId}/resume`);
+  return handle(res);
 }
 
 /** Fetches and saves a file via a throwaway object URL, so the download

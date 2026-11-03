@@ -19,6 +19,8 @@ import {
   uploadDocument,
   xmlExportUrl,
 } from "../services/api";
+import { reportActivity } from "../services/device";
+import { isNetworkFailure, queueCorrection, startOutboxSync, subscribeToPendingCount } from "../services/offlineOutbox";
 import type { BoundingBox, DocumentRecord, ExtractedField } from "../types/document";
 
 const ACCEPTED = ".jpg,.jpeg,.png,.pdf";
@@ -122,7 +124,32 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
   // real volume) - see the layout selector rendered below the toolbar.
   const [layout, setLayout] = useState<DocumentLayout>("old");
   const [batchImages, setBatchImages] = useState<BatchImageStatus[] | null>(null);
+  // Phase 3's offline outbox: >0 means at least one correction is saved
+  // locally (IndexedDB) but not yet confirmed by the backend, typically
+  // because the network was down when it was made. Reflects the outbox's
+  // real, durable state - not a guess - so it stays accurate even across
+  // a refresh while offline.
+  const [offlinePendingCount, setOfflinePendingCount] = useState(0);
+  const [justSynced, setJustSynced] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    startOutboxSync();
+    return subscribeToPendingCount((count) => {
+      setOfflinePendingCount((prev) => {
+        if (prev > 0 && count === 0) {
+          // A background flush (reconnect, or the periodic timer) just
+          // confirmed every previously-queued correction with the
+          // backend - briefly surface "Saved" per the explicit
+          // requirement that this status only appears after backend
+          // confirmation, not just because the local queue was cleared.
+          setJustSynced(true);
+          setTimeout(() => setJustSynced(false), 3000);
+        }
+        return count;
+      });
+    });
+  }, []);
 
   useEffect(() => {
     if (!batchId) {
@@ -142,6 +169,18 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
       cancelled = true;
     };
   }, [batchId]);
+
+  // Phase 2's "Save Workspace Position": whenever the operator is
+  // actively looking at a specific document/record, (debounced) report
+  // it as this device's last position so a later browser close/laptop
+  // restart/cleared cache can still be recovered from the backend. A
+  // single-document review outside a batch (no batchId) still reports
+  // document_id/record_index, which is harmless - resume only offers it
+  // back when a batch_id is present (see the Welcome-back banner).
+  useEffect(() => {
+    if (!documentId) return;
+    reportActivity({ batch_id: batchId ?? null, document_id: documentId, record_index: selectedRecordIndex });
+  }, [batchId, documentId, selectedRecordIndex]);
 
   const batchPosition = useMemo(() => {
     if (!batchImages || !documentId) return -1;
@@ -264,11 +303,33 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
     if (currentEntry) setDraft(currentEntry.fields);
   }
 
+  /** The single choke point every correction-save path (manual Save,
+   * switching records, leaving the document) already went through -
+   * extended here so a NETWORK failure specifically (offline, dropped
+   * connection) queues the change into the IndexedDB outbox and lets the
+   * caller proceed as if the save succeeded, instead of blocking the
+   * operator's navigation just because connectivity dropped. A genuine
+   * server-side rejection (bad data, validation failure) is NOT queued -
+   * it still throws exactly as before, so the existing error handling in
+   * handleSave/saveBeforeLeaving/goToRecord is unchanged for that case. */
   async function persistDraft(recordIndex: number, changes: Record<string, string | null>) {
     if (!documentId || Object.keys(changes).length === 0) return record;
-    const updated = await updateFields(documentId, recordIndex, changes);
-    setRecord(updated);
-    return updated;
+    try {
+      const updated = await updateFields(documentId, recordIndex, changes);
+      setRecord(updated);
+      return updated;
+    } catch (err) {
+      if (isNetworkFailure(err)) {
+        // No manual count bump here - the subscription above (backed by
+        // the actual IndexedDB outbox, not a hand-kept counter) is the
+        // single source of truth, which also correctly handles merging
+        // a second offline edit to the same record into one entry
+        // instead of over-counting it.
+        await queueCorrection(documentId, recordIndex, changes);
+        return record;
+      }
+      throw err;
+    }
   }
 
   async function handleSave() {
@@ -699,6 +760,8 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
         hasDocument={!!documentId && !!record}
         submitting={submitting}
         isInBatch={!!batchId}
+        offlinePendingCount={offlinePendingCount}
+        justSynced={justSynced}
         onSelectImage={() => fileInputRef.current?.click()}
         onSave={handleSave}
         onCancelEdit={handleCancelEdit}

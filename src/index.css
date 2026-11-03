@@ -742,6 +742,48 @@ input {
   font-weight: 600;
 }
 
+/* Same shape as .approved-banner, just in the neutral/primary palette -
+   this isn't a success or warning state, just informational. */
+.resume-banner {
+  background: #eef4fb;
+  color: var(--primary-dark);
+  border: 1px solid #c9dcf0;
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 12px 28px 0;
+  font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.resume-banner-text strong {
+  font-weight: 700;
+}
+
+.resume-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.resume-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.resume-banner-dismiss:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 /* --- Legacy toolbar (recreates the reference app's button row) --- */
 .legacy-toolbar {
   display: flex;
@@ -786,6 +828,23 @@ input {
 .legacy-btn-danger {
   border-color: #c0433d;
   color: #8a2620;
+}
+
+.sync-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.sync-status.offline {
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+
+.sync-status.synced {
+  color: var(--success);
+  background: var(--success-bg);
 }
 
 .legacy-btn-primary {

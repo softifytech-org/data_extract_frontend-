@@ -1,6 +1,7 @@
 import { useState } from "react";
 import BatchPage from "./pages/BatchPage";
 import MainPage from "./pages/MainPage";
+import ResumeBanner from "./components/ResumeBanner";
 
 type View =
   | { kind: "single" }
@@ -20,6 +21,17 @@ export default function App() {
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
 
   const navMode = view.kind === "review" ? "batch" : view.kind;
+
+  // Resume is always an explicit operator action - this only sets state,
+  // it is never called automatically on load (see the comment on `view`
+  // above for why an earlier auto-resume-on-refresh was tried and
+  // reverted). Landing on the batch screen with no specific document
+  // (documentId === null, e.g. the operator hasn't opened one yet) is a
+  // perfectly valid resume target, not a missing case.
+  function handleResume(batchId: string, documentId: string | null) {
+    setActiveBatchId(batchId);
+    setView(documentId ? { kind: "review", documentId, batchId } : { kind: "batch" });
+  }
 
   return (
     <div className="app-shell">
@@ -47,6 +59,7 @@ export default function App() {
           </button>
         </nav>
       </header>
+      <ResumeBanner onResume={handleResume} />
       <main className="app-main">
         {view.kind === "single" && <MainPage />}
         {view.kind === "batch" && (

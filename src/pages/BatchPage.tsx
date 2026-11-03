@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  archiveBatch,
   ApiRequestError,
   BatchDetail,
   BatchNotReadyError,
   BatchSubmissionStatus,
   clearBatch,
+  confirmBatchCompletion,
   type DocumentLayout,
   downloadBatchDocumentExcel,
   downloadBatchSubmissionXml,
@@ -14,6 +16,7 @@ import {
   submitBatch,
   uploadBatch,
 } from "../services/api";
+import CompletedBatches from "../components/CompletedBatches";
 
 const ACCEPTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".pdf"];
 const ACCEPTED = ACCEPTED_EXTENSIONS.join(",");
@@ -168,6 +171,14 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [confirmingCompletion, setConfirmingCompletion] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  // Bumped after an archive/unarchive so <CompletedBatches> below
+  // refetches - simpler than lifting its whole list into this
+  // component's own state for a view it otherwise never needs to read.
+  const [completedBatchesRefreshKey, setCompletedBatchesRefreshKey] = useState(0);
   const [removingPosition, setRemovingPosition] = useState<number | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   // One layout applies to the whole batch (see backend: app/api/batches.py's
@@ -331,6 +342,67 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
       setClearError(err instanceof ApiRequestError ? err.message : "Could not clear this batch. Please try again.");
     } finally {
       setClearing(false);
+    }
+  }
+
+  /** Forgets this screen's pointer to the current batch - never touches
+   * the batch's own data, images, or corrections (unlike handleClearBatch
+   * above, which actually deletes the working copies). The batch keeps
+   * existing, fully intact, and reappears under Completed Batches below. */
+  function forgetCurrentBatchLocally() {
+    stopPolling();
+    setBatch(null);
+    setSubmission(null);
+    setLastUploadedLayout(null);
+    onBatchCleared?.();
+  }
+
+  /** Must reliably reach the backend before this screen resets - a local
+   * reset alone is never treated as "the operator confirmed completion"
+   * (see confirmBatchCompletion's own docstring): that confirmation is
+   * what starts the backend's 24h retention countdown, so if this call
+   * fails (network drop, server error) the batch must NOT disappear from
+   * this screen - the operator needs to see the failure and can retry,
+   * exactly like the existing Archive button's own error handling just
+   * below. Only on a confirmed success does the workspace actually reset. */
+  async function handleStartNewBatch() {
+    if (!batch) return;
+    if (
+      !window.confirm(
+        "Start a new batch?\n\nThe current batch and everything in it (images, corrections, and its XML " +
+          "export) stays exactly as it is for 24 hours - you'll find it under Completed Batches below. This " +
+          "just opens a fresh, empty workspace for new uploads."
+      )
+    ) {
+      return;
+    }
+    setConfirmingCompletion(true);
+    setConfirmError(null);
+    try {
+      await confirmBatchCompletion(batch.id);
+      forgetCurrentBatchLocally();
+      setCompletedBatchesRefreshKey((k) => k + 1);
+    } catch (err) {
+      setConfirmError(
+        err instanceof ApiRequestError ? err.message : "Could not confirm completion. Please try again."
+      );
+    } finally {
+      setConfirmingCompletion(false);
+    }
+  }
+
+  async function handleArchiveBatch() {
+    if (!batch) return;
+    setArchiving(true);
+    setArchiveError(null);
+    try {
+      await archiveBatch(batch.id);
+      forgetCurrentBatchLocally();
+      setCompletedBatchesRefreshKey((k) => k + 1);
+    } catch (err) {
+      setArchiveError(err instanceof ApiRequestError ? err.message : "Could not archive this batch. Please try again.");
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -577,6 +649,14 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
                       Export Combined XML
                     </button>
                     {"  "}
+                    <button className="primary-button" disabled={confirmingCompletion} onClick={handleStartNewBatch}>
+                      {confirmingCompletion ? "Confirming…" : "Start New Batch"}
+                    </button>
+                    {"  "}
+                    <button className="secondary-button" disabled={archiving} onClick={handleArchiveBatch}>
+                      {archiving ? "Archiving…" : "Archive this batch"}
+                    </button>
+                    {"  "}
                     <button className="secondary-button" disabled={clearing} onClick={handleClearBatch}>
                       {clearing ? "Clearing…" : "Clear this batch"}
                     </button>
@@ -604,10 +684,14 @@ export default function BatchPage({ initialBatchId, onBatchCreated, onReviewDocu
               )}
               {submitError && <div className="error-banner">{submitError}</div>}
               {clearError && <div className="error-banner">{clearError}</div>}
+              {archiveError && <div className="error-banner">{archiveError}</div>}
+              {confirmError && <div className="error-banner">{confirmError}</div>}
             </div>
           </div>
         );
       })()}
+
+      <CompletedBatches refreshKey={completedBatchesRefreshKey} />
     </div>
   );
 }
