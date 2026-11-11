@@ -63,6 +63,7 @@ interface Props {
   hasDocument?: boolean;
   onSelectField: (fieldName: string) => void;
   onChangeField: (fieldName: string, value: string) => void;
+  onToggleInvalidField: (fieldName: string) => void;
 }
 
 export default function LegacyForm({
@@ -71,6 +72,7 @@ export default function LegacyForm({
   hasDocument = true,
   onSelectField,
   onChangeField,
+  onToggleInvalidField,
 }: Props) {
   return (
     <div className="legacy-form-grid">
@@ -86,6 +88,7 @@ export default function LegacyForm({
             selected={name === selectedField}
             onSelect={() => onSelectField(name)}
             onChange={(value) => onChangeField(name, value)}
+            onToggleInvalid={() => onToggleInvalidField(name)}
           />
         );
       })}

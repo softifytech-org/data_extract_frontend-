@@ -47,6 +47,11 @@ export interface ExtractedField {
   source: FieldSource;
   validation: FieldValidation;
   bounding_box: BoundingBox | null;
+  // Operator-set "this value is wrong" flag, independent of `value` -
+  // mirrors ExtractedField.marked_invalid in app/models/document.py. See
+  // that model's own comment for the bug this replaced: marking a field
+  // invalid must never overwrite or lose its value.
+  marked_invalid: boolean;
 }
 
 export interface SourceFileInfo {

@@ -1,4 +1,4 @@
-import { ApiRequestError, updateFields } from "./api";
+import { ApiRequestError, type FieldChange, updateFields } from "./api";
 
 /** IndexedDB-backed outbox for field corrections that could not reach
  * the backend because of a NETWORK problem specifically - never for a
@@ -20,7 +20,7 @@ export interface OutboxEntry {
   key: string; // `${documentId}:${recordIndex}`
   documentId: string;
   recordIndex: number;
-  changes: Record<string, string | null>;
+  changes: Record<string, FieldChange>;
   queuedAt: string;
 }
 
@@ -46,7 +46,7 @@ function keyFor(documentId: string, recordIndex: number): string {
  * the same semantics a normal online save would have if the two edits
  * had happened back to back). */
 export async function queueCorrection(
-  documentId: string, recordIndex: number, changes: Record<string, string | null>
+  documentId: string, recordIndex: number, changes: Record<string, FieldChange>
 ): Promise<void> {
   const db = await openDb();
   try {

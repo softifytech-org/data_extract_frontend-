@@ -66,6 +66,7 @@ export function buildBlankFields(): Record<string, ExtractedField> {
       source: "ocr",
       validation: { format_valid: null, ocr_agreement: null, ocr_agreement_ratio: null, business_rule_valid: null, notes: [] },
       bounding_box: null,
+      marked_invalid: false,
     };
   }
   return fields;

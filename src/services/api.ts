@@ -8,6 +8,16 @@ const API_ROOT = import.meta.env.VITE_API_BASE_URL ?? "";
 const BASE = `${API_ROOT}/api/documents`;
 const BATCH_BASE = `${API_ROOT}/api/batches`;
 
+// Mirrors FieldUpdateItem in app/schemas/document.py: `value` and
+// `marked_invalid` are independent and each only applied server-side when
+// the KEY is actually present in the object (see update_fields' use of
+// model_fields_set) - omit a key entirely to leave that part of the field
+// untouched, rather than passing it as undefined/null to mean "no change".
+export interface FieldChange {
+  value?: string | null;
+  marked_invalid?: boolean;
+}
+
 export class ApiRequestError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -61,11 +71,9 @@ export async function getDocument(documentId: string): Promise<DocumentRecord> {
 export async function updateFields(
   documentId: string,
   recordIndex: number,
-  fields: Record<string, string | null>
+  fields: Record<string, FieldChange>
 ): Promise<DocumentRecord> {
-  const body = {
-    fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, { value: v }])),
-  };
+  const body = { fields };
   const res = await fetch(`${BASE}/${documentId}/records/${recordIndex}/fields`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

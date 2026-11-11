@@ -10,6 +10,7 @@ import {
   type BatchImageStatus,
   type DocumentLayout,
   excelExportUrl,
+  type FieldChange,
   getBatch,
   getDocument,
   processDocument,
@@ -63,9 +64,16 @@ function computeRemark(fields: Record<string, ExtractedField>): string {
   for (const name of OCR_FIELD_ORDER) {
     const field = fields[name];
     if (!field) continue;
-    if (isExplicitNA(field.value)) {
-      invalidLabels.push(field.label);
-    } else if (field.value && field.validation.format_valid === false) {
+    // Mirrors generate_remark() in services/validation/remark.py exactly,
+    // including its third, independent condition: an operator-marked
+    // field counts as invalid even when its value is well-formatted and
+    // not N.A - see ExtractedField.marked_invalid's own comment for why
+    // this exists as a separate flag rather than overwriting value.
+    if (
+      isExplicitNA(field.value) ||
+      (field.value && field.validation.format_valid === false) ||
+      field.marked_invalid
+    ) {
       invalidLabels.push(field.label);
     }
   }
@@ -225,11 +233,16 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
   );
 
   const dirtyFields = useMemo(() => {
-    if (!currentEntry) return {} as Record<string, string | null>;
-    const changes: Record<string, string | null> = {};
+    if (!currentEntry) return {} as Record<string, FieldChange>;
+    const changes: Record<string, FieldChange> = {};
     for (const [name, field] of Object.entries(draft)) {
-      const original = currentEntry.fields[name]?.value ?? null;
-      if (field.value !== original) changes[name] = field.value;
+      const originalField = currentEntry.fields[name];
+      const original = originalField?.value ?? null;
+      const originalInvalid = originalField?.marked_invalid ?? false;
+      const change: FieldChange = {};
+      if (field.value !== original) change.value = field.value;
+      if (field.marked_invalid !== originalInvalid) change.marked_invalid = field.marked_invalid;
+      if (Object.keys(change).length > 0) changes[name] = change;
     }
     return changes;
   }, [draft, currentEntry]);
@@ -289,9 +302,29 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
         [fieldName]: { ...prev[fieldName], value: value.length ? value : null },
       };
       // Remark is otherwise only recomputed server-side on Save (see
-      // services/validation/remark.py) - mirrored here so marking a
-      // field invalid (the IN button) shows up in Remark immediately,
-      // not just after the next save round-trip.
+      // services/validation/remark.py) - mirrored here so an edit that
+      // changes a field's N.A/format-valid status shows up in Remark
+      // immediately, not just after the next save round-trip.
+      if (next.remark) {
+        next.remark = { ...next.remark, value: computeRemark(next) };
+      }
+      return next;
+    });
+  }
+
+  /** Flips marked_invalid only - value (and everything else about the
+   * field) is left exactly as it was. See ExtractedField.marked_invalid's
+   * own comment (app/models/document.py) for the bug this exists to
+   * prevent: the old Invalid toggle overwrote value with the literal text
+   * "N.A", permanently losing whatever was there. */
+  function handleToggleInvalid(fieldName: string) {
+    setDraft((prev) => {
+      const current = prev[fieldName];
+      if (!current) return prev;
+      const next = {
+        ...prev,
+        [fieldName]: { ...current, marked_invalid: !current.marked_invalid },
+      };
       if (next.remark) {
         next.remark = { ...next.remark, value: computeRemark(next) };
       }
@@ -312,7 +345,7 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
    * server-side rejection (bad data, validation failure) is NOT queued -
    * it still throws exactly as before, so the existing error handling in
    * handleSave/saveBeforeLeaving/goToRecord is unchanged for that case. */
-  async function persistDraft(recordIndex: number, changes: Record<string, string | null>) {
+  async function persistDraft(recordIndex: number, changes: Record<string, FieldChange>) {
     if (!documentId || Object.keys(changes).length === 0) return record;
     try {
       const updated = await updateFields(documentId, recordIndex, changes);
@@ -835,6 +868,7 @@ export default function MainPage({ initialDocumentId, onBack, batchId, onNavigat
                 hasDocument={!!record}
                 onSelectField={setSelectedField}
                 onChangeField={handleFieldChange}
+                onToggleInvalidField={handleToggleInvalid}
               />
             )}
           </div>

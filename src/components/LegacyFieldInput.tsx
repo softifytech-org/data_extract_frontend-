@@ -8,27 +8,12 @@ const STATUS_ICON: Record<string, string> = {
   rejected: "✕",
 };
 
-// Same explicit-N/A spellings services/validation/remark.py already
-// recognizes server-side (patterns.EXPLICIT_NA_VALUES) - the Invalid
-// button below only works because it writes a value the EXISTING
-// backend remark logic already treats as "this field is invalid", so
-// Remark recomputes automatically on save with no new backend code.
-const EXPLICIT_NA_VALUES = new Set(["N.A", "N.A.", "NA", "N/A", "NONE"]);
-// The exact spelling BN_WorkFlow.pdf's own "Common Rule (N.A Handling)"
-// specifies ("You must type 'N.A' in the field").
-const NA_VALUE = "N.A";
-
 // image_name is never OCR-extracted (it's the upload's own filename) and
 // remark is a DERIVED field computed from every other field's status
 // (services/validation/remark.py only iterates OCR_FIELD_ORDER, which
 // excludes it) - marking either one "invalid" would do nothing, so
 // neither gets the button.
 const NOT_TOGGLEABLE = new Set(["image_name", "remark"]);
-
-function isExplicitNA(value: string | null): boolean {
-  if (!value) return false;
-  return EXPLICIT_NA_VALUES.has(value.trim().toUpperCase().replace(/\.$/, ""));
-}
 
 interface Props {
   field: ExtractedField;
@@ -40,6 +25,12 @@ interface Props {
   hasDocument?: boolean;
   onSelect: () => void;
   onChange: (value: string) => void;
+  /** Flips field.marked_invalid without ever touching field.value - see
+   * ExtractedField.marked_invalid's own comment (app/models/document.py)
+   * for the bug this replaced: the old toggle overwrote value with the
+   * literal text "N.A", permanently losing whatever the operator or OCR
+   * had there. */
+  onToggleInvalid: () => void;
 }
 
 export default function LegacyFieldInput({
@@ -49,9 +40,10 @@ export default function LegacyFieldInput({
   hasDocument = true,
   onSelect,
   onChange,
+  onToggleInvalid,
 }: Props) {
   const value = field.value ?? "";
-  const markedInvalid = hasDocument && isExplicitNA(field.value);
+  const markedInvalid = hasDocument && field.marked_invalid;
   const toggleable = hasDocument && !NOT_TOGGLEABLE.has(field.field_name);
 
   const inputClass = !hasDocument
@@ -67,14 +59,7 @@ export default function LegacyFieldInput({
   function toggleInvalid(e: MouseEvent) {
     e.stopPropagation();
     onSelect();
-    // Un-marking clears back to blank rather than guessing at a "real"
-    // value - the reviewer can always type one in if they change their
-    // mind. Marking writes the exact legacy-spec spelling so Remark
-    // (recomputed server-side on save) reads "<Field Name> is invalid"
-    // automatically, with no extra step - and recomputes fresh from
-    // current field state each time, so it never accumulates duplicate
-    // mentions of the same field across repeated toggles.
-    onChange(markedInvalid ? "" : NA_VALUE);
+    onToggleInvalid();
   }
 
   return (
@@ -107,8 +92,8 @@ export default function LegacyFieldInput({
             onClick={toggleInvalid}
             title={
               markedInvalid
-                ? "Marked invalid - click to clear"
-                : "Mark this field invalid - updates Remark automatically"
+                ? "Marked invalid - click to unmark (value is kept either way)"
+                : "Mark this field invalid - keeps the current value, updates Remark automatically"
             }
           >
             IN
